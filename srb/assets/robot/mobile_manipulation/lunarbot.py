@@ -167,11 +167,16 @@ class LunarBot(WheeledManipulator):
                 "rear_right_steering_to_wheel_joint",
             ],
             ## (x, y) of each wheel in the chassis body frame [m], same order as above
+            ## NOTE: the rear pair is offset an extra -0.03 m in x relative to
+            ## the URDF's (symmetric) value -- the rear axle's USD rest pose
+            ## was shifted rearward by that amount to correct a mismatch
+            ## against the (asymmetric) chassis hull/rail mesh; keep this in
+            ## sync with the rear steering/wheel links' authored positions.
             wheel_positions=[
                 (0.4925, 0.42705),
                 (0.4925, -0.42705),
-                (-0.4925, 0.42705),
-                (-0.4925, -0.42705),
+                (-0.5225, 0.42705),
+                (-0.5225, -0.42705),
             ],
             wheel_radius=0.1453,
             max_steering_angle=deg_to_rad(120.0),
