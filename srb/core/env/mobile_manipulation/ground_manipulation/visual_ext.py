@@ -1,3 +1,4 @@
+from srb.core.asset import WheeledManipulator
 from srb.core.env.common.extension.visual import VisualExtCfg
 from srb.core.sensor import CameraCfg, PinholeCameraCfg
 from srb.utils.cfg import configclass
@@ -9,6 +10,15 @@ from .env import GroundManipulationEnvCfg
 @configclass
 class GroundManipulationEnvVisualExtCfg(VisualExtCfg):
     def wrap(self, env_cfg: GroundManipulationEnvCfg):
+        ## The wrist camera frame lives on the robot itself for a monolithic
+        ## WheeledManipulator, or on the separate manipulator sub-asset otherwise
+        if isinstance(env_cfg._robot, WheeledManipulator):
+            _wrist_prim_path = env_cfg._robot.asset_cfg.prim_path
+            _wrist_frame = env_cfg._robot.frame_wrist_camera
+        else:
+            _wrist_prim_path = env_cfg._robot.manipulator.asset_cfg.prim_path
+            _wrist_frame = env_cfg._robot.manipulator.frame_wrist_camera
+
         self.cameras_cfg = {
             "cam_scene": CameraCfg(
                 prim_path=f"{env_cfg._robot.asset_cfg.prim_path}{('/' + env_cfg._robot.frame_base.prim_relpath) if env_cfg._robot.frame_base.prim_relpath else ''}/camera_scene",
@@ -35,11 +45,11 @@ class GroundManipulationEnvVisualExtCfg(VisualExtCfg):
                 ),
             ),
             "cam_wrist": CameraCfg(
-                prim_path=f"{env_cfg._robot.manipulator.asset_cfg.prim_path}/{env_cfg._robot.manipulator.frame_wrist_camera.prim_relpath}",
+                prim_path=f"{_wrist_prim_path}/{_wrist_frame.prim_relpath}",
                 offset=CameraCfg.OffsetCfg(
                     convention="world",
-                    pos=env_cfg._robot.manipulator.frame_wrist_camera.offset.pos,
-                    rot=env_cfg._robot.manipulator.frame_wrist_camera.offset.rot,
+                    pos=_wrist_frame.offset.pos,
+                    rot=_wrist_frame.offset.rot,
                 ),
                 spawn=PinholeCameraCfg(
                     focal_length=10.0,

@@ -5,3 +5,4 @@ from .mobile_manipulator import (  # noqa: F401
     MobileManipulatorRegistry,
 )
 from .mobile_manipulator_type import MobileManipulatorType  # noqa: F401
+from .wheeled_manipulator import WheeledManipulator  # noqa: F401

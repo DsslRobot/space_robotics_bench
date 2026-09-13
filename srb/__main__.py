@@ -442,6 +442,44 @@ def teleop_agent(
     should_reset = False
     teleop_interface.add_callback("L", cb_reset)
 
+    ## Set up an optional teleop-mode toggle callback (e.g. for robots whose
+    ## action group drives more than one mechanism from the same twist, such
+    ## as a wheeled base + arm sharing WASDQE/ZXCVTG)
+    ## NOTE: "TAB" is reserved by Omniverse Kit's own UI for widget-focus
+    ## cycling and never reaches the carb keyboard-input subscription that
+    ## add_callback binds to, so a plain letter key is used instead.
+    ## NOTE: `env.unwrapped.cfg._robot`/`.robot` are NOT reliable references
+    ## to the action-group instance actually invoked by `map_cmd_to_action`
+    ## below: `configclass`'s injected `_custom_post_init` deep-copies every
+    ## non-callable attribute (including `robot`/`_robot`/`actions`) *after*
+    ## `_add_robot()` has already captured a bound method of the original,
+    ## pre-copy action-group instance into the `map_cmd_to_action` closure.
+    ## The only object guaranteed to be the live one is recovered by walking
+    ## that closure directly.
+    _toggle_targets = []
+    _map_fn = getattr(getattr(env.unwrapped.cfg, "actions", None), "map_cmd_to_action", None)  # type: ignore
+    for _cell in getattr(_map_fn, "__closure__", None) or ():
+        try:
+            _val = _cell.cell_contents
+        except ValueError:
+            continue
+        if isinstance(_val, list):
+            for _fn in _val:
+                _obj = getattr(_fn, "__self__", None)
+                if (
+                    _obj is not None
+                    and hasattr(_obj, "toggle_mode")
+                    and _obj not in _toggle_targets
+                ):
+                    _toggle_targets.append(_obj)
+    if _toggle_targets:
+
+        def cb_toggle_mode():
+            for _obj in _toggle_targets:
+                _obj.toggle_mode()
+
+        teleop_interface.add_callback("M", cb_toggle_mode)
+
     ## Initialize the teleop interface via reset
     teleop_interface.reset()
     print(teleop_interface)

@@ -6,7 +6,12 @@ from srb.core.action import (
     JointPositionRelativeActionGroup,
     OperationalSpaceControlActionGroup,
 )
-from srb.core.asset import Articulation, AssetVariant, GroundManipulator
+from srb.core.asset import (
+    Articulation,
+    AssetVariant,
+    GroundManipulator,
+    WheeledManipulator,
+)
 from srb.core.env.manipulation.env import (
     ManipulationEnv,
     ManipulationEventCfg,
@@ -37,10 +42,10 @@ class GroundManipulationEventCfg(GroundEventCfg, ManipulationEventCfg):
 @configclass
 class GroundManipulationEnvCfg(GroundEnvCfg):
     ## Assets
-    robot: GroundManipulator | AssetVariant = assets.GenericGroundManipulator(
-        mobile_base=assets.Spot(), manipulator=assets.Franka()
+    robot: GroundManipulator | WheeledManipulator | AssetVariant = (
+        assets.GenericGroundManipulator(mobile_base=assets.Spot(), manipulator=assets.Franka())
     )
-    _robot: GroundManipulator = MISSING  # type: ignore
+    _robot: GroundManipulator | WheeledManipulator = MISSING  # type: ignore
 
     ## Scene
     scene: GroundManipulationSceneCfg = GroundManipulationSceneCfg()
@@ -61,6 +66,50 @@ class GroundManipulationEnvCfg(GroundEnvCfg):
             self.robot.manipulator.actions = JointPositionRelativeActionGroup()
 
         super().__post_init__()
+
+        if isinstance(self._robot, WheeledManipulator):
+            ## Monolithic wheeled manipulator: base + arm + end effector all
+            ## belong to the same articulation exposed as the "robot" scene entity.
+            ## NOTE: When overriding a CombinedMobileManipulator-typed default (e.g.
+            ## GenericGroundManipulator) with a WheeledManipulator via a Hydra
+            ## `env.robot=...` CLI override, `self.scene.manipulator`/`end_effector`
+            ## are reconstructed from the *stale pre-override* config snapshot
+            ## (they are side effects of the combined-robot wiring in
+            ## `env_cfg.py::_add_robot`, which is skipped for non-combined
+            ## robots and therefore never re-clears them). Explicitly clear
+            ## them here so no leftover Franka/Spot-shaped assets get spawned.
+            self.scene.manipulator = None
+            self.scene.end_effector = None
+            self.joint_assemblies.pop("manipulator", None)
+            self.joint_assemblies.pop("end_effector", None)
+
+            # Sensor: End-effector transform
+            self.scene.tf_end_effector.prim_path = (
+                f"{self.scene.robot.prim_path}/{self._robot.frame_base.prim_relpath}"
+            )
+            self.scene.tf_end_effector.target_frames[0].prim_path = (
+                f"{self.scene.robot.prim_path}/{self._robot.frame_flange.prim_relpath}"
+            )
+            (
+                self.scene.tf_end_effector.target_frames[0].offset.pos,
+                self.scene.tf_end_effector.target_frames[0].offset.rot,
+            ) = (
+                self._robot.frame_flange.offset.pos,
+                self._robot.frame_flange.offset.rot,
+            )
+
+            # Sensor: Robot contacts (covers the whole fused articulation)
+            self.scene.contacts_robot.prim_path = f"{self.scene.robot.prim_path}/.*"
+
+            # No separate end-effector asset -> no dedicated contact sensor
+            self.scene.contacts_end_effector = None
+
+            # Event: Randomize robot joints (the "robot" scene entity IS the manipulator)
+            self.events.randomize_robot_joints.params["asset_cfg"] = SceneEntityCfg(
+                "robot"
+            )
+            return
+
         assert self.scene.manipulator is not None
 
         ## Adapted from ManipulationEnvCfg
@@ -113,4 +162,8 @@ class GroundManipulationEnv(GroundEnv, ManipulationEnv):
         super().__init__(cfg, **kwargs)
 
         ## Get scene assets
-        self._manipulator: Articulation = self.scene["manipulator"]
+        self._manipulator: Articulation = (
+            self._robot
+            if isinstance(cfg._robot, WheeledManipulator)
+            else self.scene["manipulator"]
+        )

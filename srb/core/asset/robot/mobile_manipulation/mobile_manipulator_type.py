@@ -8,6 +8,7 @@ class MobileManipulatorType(str, Enum):
     GROUND = auto()
     AERIAL = auto()
     ORBITAL = auto()
+    WHEELED = auto()
 
     def __str__(self) -> str:
         return self.name.lower()
