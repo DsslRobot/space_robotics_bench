@@ -4,8 +4,8 @@ from srb.core.action import (
     ActionGroup,
     BinaryJointPositionActionCfg,
     DifferentialIKControllerCfg,
-    DifferentialInverseKinematicsActionCfg,
     FourWheelSteerActionCfg,
+    SwitchableArmActionCfg,
     WheeledManipulatorActionGroup,
 )
 from srb.core.actuator import ImplicitActuatorCfg
@@ -190,9 +190,17 @@ class LunarBot(WheeledManipulator):
             scale_linear=-1.0,
             scale_angular=-1.0,
         ),
-        arm_ik=DifferentialInverseKinematicsActionCfg(
+        arm=SwitchableArmActionCfg(
             asset_name="robot",
-            joint_names=["joint[1-7]"],
+            joint_names=[
+                "joint1",
+                "joint2",
+                "joint3",
+                "joint4",
+                "joint5",
+                "joint6",
+                "joint7",
+            ],
             base_name="base_link",
             body_name="Link7",
             controller=DifferentialIKControllerCfg(
@@ -200,10 +208,16 @@ class LunarBot(WheeledManipulator):
                 use_relative_mode=True,
                 ik_method="dls",
             ),
-            scale=0.1,
-            body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
-                pos=_TCP_OFFSET
-            ),
+            ik_scale=0.1,
+            body_offset=SwitchableArmActionCfg.OffsetCfg(pos=_TCP_OFFSET),
+            # Direct radians pass-through: raw joint-position sub-command IS
+            # the physical target angle, matching OpenRAL's JOINT_POSITION
+            # control mode's own convention (physical units end to end, no
+            # HAL-side unit conversion needed -- unlike the IK sub-mode's
+            # raw<->m/s calibration, which SRB's differential-IK action term
+            # genuinely needs since it treats its raw input as a scaled
+            # per-step position delta, not a physical unit).
+            joint_pos_scale=1.0,
         ),
         hand=BinaryJointPositionActionCfg(
             asset_name="robot",
