@@ -76,7 +76,19 @@ class WheeledManipulatorActionGroup(ActionGroup):
             ik_cmd[0] *= -1.0
             ik_cmd[1] *= -1.0
         else:
-            base_cmd = twist[:2]
+            # FourWheelSteerAction's 2-DoF command is (v, omega) -- forward
+            # linear speed and yaw rate (its own docstring) -- NOT the first
+            # two slots of the 6-DoF twist [vx,vy,vz,wx,wy,wz]. `twist[:2]`
+            # silently took (vx, vy), so every angular.z command (a pure
+            # in-place turn included) was dropped before it ever reached
+            # FourWheelSteerAction.process_actions() -- confirmed live via
+            # FourWheelSteerAction.apply_actions() reading v=w=0.0 while a
+            # real angular.z=0.4 cmd_vel was arriving on the ROS topic.
+            # Found while live-verifying F19 (steer-before-drive) in
+            # four_wheel_steer.py -- a separate, pre-existing bug, not
+            # introduced by that fix, but a direct blocker to observing it
+            # through the real BODY_TWIST dispatch path.
+            base_cmd = twist[[0, 5]]
             ik_cmd = torch.zeros(6, device=twist.device, dtype=twist.dtype)
 
         return torch.cat(
