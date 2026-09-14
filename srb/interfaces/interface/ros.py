@@ -5,6 +5,7 @@ except ImportError:
 
     enable_ros2_bridge()
 
+import array
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence, Tuple, Type
@@ -60,6 +61,23 @@ from .base import InterfaceBase
 
 if TYPE_CHECKING:
     from srb._typing import AnyEnv
+
+
+def _ros_bytes(buffer: numpy.ndarray) -> array.array:
+    """Pack a numpy buffer for a rosidl `uint8[]` field without the per-byte tax.
+
+    rosidl's generated `.data` setters accept two shapes: an `array.array('B')`
+    (stored as-is, one `isinstance` check) or any other sequence, which under
+    `__debug__` is validated **element by element in pure Python** — two full
+    passes of `all(isinstance(v, int) ...)` / `all(0 <= v < 256 ...)` over
+    every byte. A `bytes` object takes the slow path. For this bridge that is
+    a 640x480 RGB image (~0.9 MB), a 32FC1 depth image (~1.2 MB) and an
+    RGB pointcloud (~7 MB) per camera per tick — tens of millions of
+    Python-level iterations per publish, which is what pinned the whole
+    simulator to ~0.4 Hz with the GPU idle (Space Robot Harness F27/F28).
+    `array.array('B', bytes)` is a memcpy.
+    """
+    return array.array("B", buffer.tobytes())
 
 
 class RosInterface(InterfaceBase):
@@ -658,7 +676,7 @@ class RosInterface(InterfaceBase):
                             image_msg.step = 3 * img_data.shape[1]
                             if img_data.dtype != numpy.uint8:
                                 img_data = (255.0 * img_data).astype(numpy.uint8)
-                            image_msg.data = img_data.tobytes()
+                            image_msg.data = _ros_bytes(img_data)
 
                         elif data_type == "rgba" or img_data.shape[2] == 4:
                             image_msg.encoding = "rgba8"
@@ -666,7 +684,7 @@ class RosInterface(InterfaceBase):
                             image_msg.step = 4 * img_data.shape[1]
                             if img_data.dtype != numpy.uint8:
                                 img_data = (255.0 * img_data).astype(numpy.uint8)
-                            image_msg.data = img_data.tobytes()
+                            image_msg.data = _ros_bytes(img_data)
 
                         elif data_type in (
                             "depth",
@@ -676,7 +694,7 @@ class RosInterface(InterfaceBase):
                             image_msg.encoding = "32FC1"
                             image_msg.is_bigendian = False
                             image_msg.step = 4 * img_data.shape[1]
-                            image_msg.data = img_data.astype(numpy.float32).tobytes()
+                            image_msg.data = _ros_bytes(img_data.astype(numpy.float32))
 
                         elif img_data.shape[2] == 1:
                             image_msg.encoding = "mono8"
@@ -684,7 +702,7 @@ class RosInterface(InterfaceBase):
                             image_msg.step = img_data.shape[1]
                             if img_data.dtype != numpy.uint8:
                                 img_data = (255.0 * img_data).astype(numpy.uint8)
-                            image_msg.data = img_data.tobytes()
+                            image_msg.data = _ros_bytes(img_data)
 
                         else:
                             # Unsupported format
@@ -795,7 +813,7 @@ class RosInterface(InterfaceBase):
                             pointcloud_msg.point_step * pointcloud_msg.width
                         )
                         pointcloud_msg.is_dense = True
-                        pointcloud_msg.data = pointcloud_data.tobytes()
+                        pointcloud_msg.data = _ros_bytes(pointcloud_data)
 
                         publishers["pointcloud"][i].publish(pointcloud_msg)
 
@@ -834,7 +852,7 @@ class RosInterface(InterfaceBase):
                         pointcloud_msg.point_step * pointcloud_msg.width
                     )
                     pointcloud_msg.is_dense = True
-                    pointcloud_msg.data = ray_hits.tobytes()
+                    pointcloud_msg.data = _ros_bytes(ray_hits)
 
                     publishers["pointcloud"][i].publish(pointcloud_msg)
 
