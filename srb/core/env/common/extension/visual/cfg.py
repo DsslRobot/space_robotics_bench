@@ -51,6 +51,17 @@ class VisualExtCfg:
     ) = ("rgb", "depth")
 
     ## Recording
+    skip_observations: bool = False
+    """Skip constructing the image observations in `_get_observations()`.
+
+    The observations are the RL-agent-facing view of the cameras (per-camera
+    channel merge + normalisation, on the sim device). Workflows that consume
+    the raw camera buffers elsewhere — `srb agent ros` publishes them over
+    ROS 2 straight from `sensor.data.output` — pay ~8 ms per 640x480 camera
+    per tick for nothing when the sim device is the CPU; they set this.
+    Video recording (`camera_record`) is unaffected.
+    """
+
     camera_record: bool = False
     camera_record_dir: Path | str = SRB_LOGS_DIR.joinpath("camera_videos")
 

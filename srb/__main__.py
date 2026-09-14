@@ -26,6 +26,33 @@ if TYPE_CHECKING:
     from srb._typing import AnyEnv
     from srb.interfaces.teleop import CombinedTeleopInterface
 
+## Robots whose lidar sensor is backed by Isaac Sim's RTX render pipeline
+## (`isaacsim.sensors.rtx`, not IsaacLab's warp-based RayCaster) -- selecting
+## one of these via a Hydra `env.robot=<name>` override needs the rendering
+## experience/`enable_cameras` even for a task id that does not end in
+## "_visual". Robot selection is still a raw, unparsed Hydra dotlist string at
+## the point this matters (before Hydra/AppLauncher have run), so this has to
+## be a name check, not an introspection of the robot's declared sensors.
+_RTX_LIDAR_ROBOTS = ("lunar_bot",)
+
+
+def _env_needs_rendering(env_id: str) -> bool:
+    """Whether the selected env/robot combination needs the RTX render pipeline.
+
+    Robot selection (``env.robot=<name>``) is a Hydra dotlist override --
+    unrecognized by `argparse`, so it is never consumed out of `sys.argv`
+    (Hydra's own `@hydra.main` reads `sys.argv` directly, later). Checking
+    `sys.argv` here is therefore correct, not a shortcut -- there is no
+    parsed, structured form of this argument available yet at this point.
+    """
+    if env_id.endswith("_visual"):
+        return True
+    return any(
+        arg in (f"env.robot={robot}", f"robot={robot}")
+        for arg in sys.argv
+        for robot in _RTX_LIDAR_ROBOTS
+    )
+
 
 def main():
     def impl(
@@ -109,7 +136,7 @@ def run_agent_with_env(
     from srb.core.app import AppLauncher
 
     # Preprocess kwargs
-    kwargs["enable_cameras"] = video_enable or env_id.endswith("_visual")
+    kwargs["enable_cameras"] = video_enable or _env_needs_rendering(env_id)
     kwargs["experience"] = SRB_APPS_DIR.joinpath(
         f"srb.{'headless.' if headless else ''}{'rendering.' if kwargs['enable_cameras'] else ''}{'xr.' if kwargs['xr'] else ''}kit"
     )
@@ -842,6 +869,8 @@ def ros_agent(
     sim_app: "SimulationApp",
     **kwargs,
 ):
+    import time
+
     import torch
 
     from srb.interfaces.interface.ros import RosInterface
@@ -850,6 +879,11 @@ def ros_agent(
     # Disable truncation
     if hasattr(env.unwrapped.cfg, "truncate_episodes"):  # type: ignore
         env.unwrapped.cfg.truncate_episodes = False  # type: ignore
+
+    # Skip the RL-facing image observations: nothing in this workflow reads
+    # them (the raw camera buffers are published over ROS 2 instead)
+    if hasattr(env.unwrapped.cfg, "skip_observations"):  # type: ignore
+        env.unwrapped.cfg.skip_observations = True  # type: ignore
 
     ## Get or create ROS interface
     ros_interface = None
@@ -876,19 +910,29 @@ def ros_agent(
     # Set up ROS interfaces for actions
     ros_interface.setup_action_sub()
 
+    # Optional deep timing breakdown of `env.step` (set `SRB_ROS_PROFILE=1`)
+    if os.environ.get("SRB_ROS_PROFILE"):
+        _install_step_profiler(env.unwrapped, ros_interface)
+
     ## Run the environment with ROS interface
     with torch.inference_mode():
         while sim_app.is_running():
+            _t0 = time.perf_counter()
             action = ros_interface.action
             observation, reward, terminated, truncated, info = env.step(action)  # type: ignore
-            logging.trace(
-                f"action: {action}\n"
-                f"observation: {observation}\n"
-                f"reward: {reward}\n"
-                f"terminated: {terminated}\n"
-                f"truncated: {truncated}\n"
-                f"info: {info}\n"
-            )
+            _t1 = time.perf_counter()
+            if logging.logger.isEnabledFor(logging.TRACE):
+                # The f-string below stringifies every observation tensor, so
+                # only build it when TRACE is actually enabled
+                logging.trace(
+                    f"action: {action}\n"
+                    f"observation: {observation}\n"
+                    f"reward: {reward}\n"
+                    f"terminated: {terminated}\n"
+                    f"truncated: {truncated}\n"
+                    f"info: {info}\n"
+                )
+            _t2 = time.perf_counter()
 
             # Update interface
             if should_update_interface:
@@ -899,6 +943,60 @@ def ros_agent(
                     truncated,
                     info,
                 )
+            ros_interface.profile_add(
+                env_step=_t1 - _t0, total=time.perf_counter() - _t0
+            )
+
+
+def _install_step_profiler(env, ros_interface):
+    """Wrap the pieces of `env.step` (and every sensor's lazy buffer refresh)
+    with timers that feed `RosInterface.profile_add`, so the per-tick summary
+    attributes time to physics / render / scene update / managers / sensors."""
+    import functools
+    import time
+
+    def _wrap(obj, attr: str, bucket: str):
+        fn = getattr(obj, attr, None)
+        if fn is None:
+            return
+
+        @functools.wraps(fn)
+        def timed(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                ros_interface.profile_add(**{bucket: time.perf_counter() - t0})
+
+        setattr(obj, attr, timed)
+
+    _wrap(env.sim, "step", "sim_step")
+    _wrap(env.sim, "render", "sim_render")
+    _wrap(env.scene, "update", "scene_update")
+    _wrap(env.scene, "write_data_to_sim", "scene_write")
+    for manager in (
+        "action_manager",
+        "observation_manager",
+        "reward_manager",
+        "termination_manager",
+        "command_manager",
+    ):
+        obj = getattr(env, manager, None)
+        if obj is not None:
+            _wrap(obj, "compute", f"{manager}.compute")
+    _wrap(getattr(env, "event_manager", None), "apply", "event_manager.apply")
+    # DirectRLEnv phases
+    for phase in (
+        "_pre_physics_step",
+        "_apply_action",
+        "_get_dones",
+        "_get_rewards",
+        "_reset_idx",
+        "_get_observations",
+    ):
+        _wrap(env, phase, phase)
+    for name, sensor in env.scene._sensors.items():
+        _wrap(sensor, "_update_outdated_buffers", f"lazy:{name}")
 
 
 def train_agent(algo: str, **kwargs):
@@ -1151,10 +1249,10 @@ def generate_real_agent(
     from srb.core.app import AppLauncher
 
     # Launch Isaac Sim
-    enable_cameras = env_id.endswith("_visual")
+    enable_cameras = _env_needs_rendering(env_id)
     launcher = AppLauncher(
         headless=True,
-        enable_cameras=env_id.endswith("_visual"),
+        enable_cameras=enable_cameras,
         experience=SRB_APPS_DIR.joinpath(
             f"srb.headless.{'rendering.' if enable_cameras else ''}kit"
         ),

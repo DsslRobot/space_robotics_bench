@@ -17,6 +17,7 @@ class Humanoid(
 ):
     ## Frames
     frame_imu: Frame | None = None
+    frame_lidar: Frame | None = None
     frame_front_camera: Frame
 
     ## Links
