@@ -104,7 +104,23 @@ class FourWheelSteerAction(ActionTerm):
         steer_angle = torch.clamp(
             steer_angle, -self.cfg.max_steering_angle, self.cfg.max_steering_angle
         )
-        drive_velocity = speed / self.cfg.wheel_radius
+
+        ## Steer-before-drive: scale each wheel's drive speed by how closely
+        ## its CURRENT measured steering angle already matches the
+        ## newly-commanded target, instead of driving at full speed the
+        ## instant a new target is set. The steering joints are position-
+        ## controlled (finite velocity limit, ~0.8s to swing up to 90 deg on
+        ## this robot) while the drive joints are velocity-controlled and
+        ## would otherwise receive their target in the same step -- so a
+        ## large in-place turn drove every wheel at full speed while it was
+        ## still mid-swing, pushing in inconsistent directions until
+        ## steering caught up (F19,
+        ## docs/lunar_bot_capability_set_plan.md §3.4). Standard 4WIS
+        ## practice: zero drive authority while more than 90 deg off the
+        ## commanded steering angle, full authority once aligned.
+        current_steer_angle = self._asset.data.joint_pos[:, self._steering_joint_indices]
+        steer_alignment = torch.cos(steer_angle - current_steer_angle).clamp(min=0.0)
+        drive_velocity = (speed / self.cfg.wheel_radius) * steer_alignment
 
         self._asset.set_joint_position_target(
             steer_angle, joint_ids=self._steering_joint_indices
