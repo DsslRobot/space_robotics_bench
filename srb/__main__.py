@@ -26,6 +26,33 @@ if TYPE_CHECKING:
     from srb._typing import AnyEnv
     from srb.interfaces.teleop import CombinedTeleopInterface
 
+## Robots whose lidar sensor is backed by Isaac Sim's RTX render pipeline
+## (`isaacsim.sensors.rtx`, not IsaacLab's warp-based RayCaster) -- selecting
+## one of these via a Hydra `env.robot=<name>` override needs the rendering
+## experience/`enable_cameras` even for a task id that does not end in
+## "_visual". Robot selection is still a raw, unparsed Hydra dotlist string at
+## the point this matters (before Hydra/AppLauncher have run), so this has to
+## be a name check, not an introspection of the robot's declared sensors.
+_RTX_LIDAR_ROBOTS = ("lunar_bot",)
+
+
+def _env_needs_rendering(env_id: str) -> bool:
+    """Whether the selected env/robot combination needs the RTX render pipeline.
+
+    Robot selection (``env.robot=<name>``) is a Hydra dotlist override --
+    unrecognized by `argparse`, so it is never consumed out of `sys.argv`
+    (Hydra's own `@hydra.main` reads `sys.argv` directly, later). Checking
+    `sys.argv` here is therefore correct, not a shortcut -- there is no
+    parsed, structured form of this argument available yet at this point.
+    """
+    if env_id.endswith("_visual"):
+        return True
+    return any(
+        arg in (f"env.robot={robot}", f"robot={robot}")
+        for arg in sys.argv
+        for robot in _RTX_LIDAR_ROBOTS
+    )
+
 
 def main():
     def impl(
@@ -109,7 +136,7 @@ def run_agent_with_env(
     from srb.core.app import AppLauncher
 
     # Preprocess kwargs
-    kwargs["enable_cameras"] = video_enable or env_id.endswith("_visual")
+    kwargs["enable_cameras"] = video_enable or _env_needs_rendering(env_id)
     kwargs["experience"] = SRB_APPS_DIR.joinpath(
         f"srb.{'headless.' if headless else ''}{'rendering.' if kwargs['enable_cameras'] else ''}{'xr.' if kwargs['xr'] else ''}kit"
     )
@@ -1151,10 +1178,10 @@ def generate_real_agent(
     from srb.core.app import AppLauncher
 
     # Launch Isaac Sim
-    enable_cameras = env_id.endswith("_visual")
+    enable_cameras = _env_needs_rendering(env_id)
     launcher = AppLauncher(
         headless=True,
-        enable_cameras=env_id.endswith("_visual"),
+        enable_cameras=enable_cameras,
         experience=SRB_APPS_DIR.joinpath(
             f"srb.headless.{'rendering.' if enable_cameras else ''}kit"
         ),
