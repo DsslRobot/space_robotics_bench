@@ -30,6 +30,7 @@ class WheeledManipulator(
 
     ## Frames
     frame_imu: Frame | None = None
+    frame_lidar: Frame | None = None
     frame_flange: Frame
     frame_front_camera: Frame
     frame_wrist_camera: Frame

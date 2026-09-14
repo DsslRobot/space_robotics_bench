@@ -231,6 +231,14 @@ class LunarBot(WheeledManipulator):
 
     ## Frames
     frame_base: Frame = Frame(prim_relpath="chassis_base_link")
+    ## Livox Mid-360 lidar mount, front mast (see docs/research_findings.md F23
+    ## for the CAD calibration/provenance of this pose -- Y/Z are cross-checked
+    ## against independent geometric evidence (chassis symmetry, wheel radius),
+    ## X is anchored to the existing camera mast (medium confidence, pending a
+    ## live Isaac Sim visual check). Orientation is the lidar mounted inverted
+    ## (dome down through the mount box's floor hole, base flange up into the
+    ## box cavity), derived from the CAD, not assumed.
+    frame_lidar: Frame = Frame(prim_relpath="lidar_mid360_frame")
     frame_flange: Frame = Frame(prim_relpath="Link7", offset=Transform(pos=_TCP_OFFSET))
     frame_front_camera: Frame = Frame(
         prim_relpath="rgbd_camera_frame/camera_front",

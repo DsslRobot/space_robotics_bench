@@ -16,6 +16,7 @@ class MobileRobot(Robot, robot_entrypoint=RobotType.MOBILE_ROBOT):
 
     ## Frames
     frame_imu: Frame | None = None
+    frame_lidar: Frame | None = None
     frame_payload_mount: Frame
     frame_manipulator_mount: Frame
 
