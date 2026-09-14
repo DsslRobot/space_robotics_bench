@@ -6,7 +6,9 @@ except ImportError:
     enable_ros2_bridge()
 
 import array
+import os
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Sequence, Tuple, Type
 
@@ -97,6 +99,19 @@ class RosInterface(InterfaceBase):
     def __init__(self, env: "AnyEnv", node: Node | None = None, *args, **kwargs):
         self._env: "AnyEnv" = env.unwrapped  # type: ignore
         self._num_envs = self._env.num_envs
+
+        ## Device for camera pointcloud unprojection. The env pins `sim.device` to
+        ## the CPU unless the scene has deformable objects (see
+        ## `_ensure_cuda_sim_device_for_deformable_objects`), which would otherwise
+        ## put the per-tick unprojection of every camera image on the CPU.
+        self._pointcloud_device = (
+            "cuda" if torch.cuda.is_available() else self._env.device
+        )
+
+        ## Optional per-tick timing breakdown (set `SRB_ROS_PROFILE=1`)
+        self._profile = bool(os.environ.get("SRB_ROS_PROFILE"))
+        self._profile_acc: Dict[str, float] = {}
+        self._profile_n = 0
 
         ## Initialize node
         if not node:
@@ -283,7 +298,9 @@ class RosInterface(InterfaceBase):
                 )
 
         ## Broadcast transforms (all scene assets)
+        _t0 = time.perf_counter()
         self._broadcast_transforms(time_msg)
+        _t1 = time.perf_counter()
 
         ## Publish joint states (all scene articulations)
         for articulation_name, pubs in self._pub_joint_states.items():
@@ -305,12 +322,45 @@ class RosInterface(InterfaceBase):
                 )
 
         ## Publish sensor data (all scene sensors)
+        _t2 = time.perf_counter()
         self._publish_sensor_data(time_msg)
+        _t3 = time.perf_counter()
 
         ## Process async requests
         for request, kwargs in self._async_exec_queue.items():
             request(**kwargs)
         self._async_exec_queue.clear()
+
+        if self._profile:
+            self._profile_tick(
+                tf=_t1 - _t0, joint_states=_t2 - _t1, sensors=_t3 - _t2
+            )
+
+    def _profile_tick(self, **buckets_s: float):
+        """Accumulate per-tick timings and log the mean every 100 ticks."""
+        for name, dt in buckets_s.items():
+            self._profile_acc[name] = self._profile_acc.get(name, 0.0) + dt
+        self._profile_n += 1
+        if self._profile_n % 100 == 0:
+            from srb.utils import logging
+
+            n = self._profile_n
+            summary = ", ".join(
+                f"{name}={1e3 * acc / 100:.1f}ms"
+                for name, acc in self._profile_acc.items()
+            )
+            logging.info(f"[SRB_ROS_PROFILE] tick {n}: {summary}")
+            self._profile_acc.clear()
+
+    def profile_add(self, **buckets_s: float):
+        """Let the caller (the agent loop) contribute timings of its own."""
+        if self._profile:
+            for name, dt in buckets_s.items():
+                self._profile_acc[name] = self._profile_acc.get(name, 0.0) + dt
+
+    @staticmethod
+    def _has_subscribers(publishers: Sequence[Publisher]) -> bool:
+        return any(pub.get_subscription_count() > 0 for pub in publishers)
 
     ## Action ##
 
@@ -657,6 +707,11 @@ class RosInterface(InterfaceBase):
                         if data_type == "distance_to_image_plane"
                         else f"image_{data_type}"
                     )
+                    if image_name not in publishers or not self._has_subscribers(
+                        publishers[image_name]
+                    ):
+                        # Nobody is listening: skip the copy + packing entirely
+                        continue
                     img_data_all = sensor.data.output[data_type].cpu().numpy()
                     for i in range(self._num_envs):
                         img_data = img_data_all[i]
@@ -720,13 +775,15 @@ class RosInterface(InterfaceBase):
                     if depth_option in sensor.data.output:
                         depth_type = depth_option
                         break
-                if depth_type:
+                if depth_type and self._has_subscribers(publishers["pointcloud"]):
                     depth_data = sensor.data.output[depth_type]
 
+                    # Keep the unprojection on the accelerator: the helpers accept
+                    # tensors on any device and only the packed result comes back
                     if "rgb" in sensor.data.output.keys():
-                        rgb_data = sensor.data.output["rgb"].cpu().numpy()
+                        rgb_data = sensor.data.output["rgb"]
                     elif "rgba" in sensor.data.output.keys():
-                        rgb_data = sensor.data.output["rgba"][..., :3].cpu().numpy()
+                        rgb_data = sensor.data.output["rgba"][..., :3]
                     else:
                         rgb_data = None
 
@@ -737,14 +794,14 @@ class RosInterface(InterfaceBase):
                                 depth=depth_data[i],
                                 rgb=rgb_data[i],
                                 normalize_rgb=True,
-                                device=self._env.device,
+                                device=self._pointcloud_device,
                             )
                             colors = colors.cpu().numpy().astype(numpy.float32)  # type: ignore
                         else:
                             points = create_pointcloud_from_depth(
                                 intrinsic_matrix=sensor.data.intrinsic_matrices[i],
                                 depth=depth_data[i],
-                                device=self._env.device,
+                                device=self._pointcloud_device,
                             )
                         points = points.cpu().numpy().astype(numpy.float32)  # type: ignore
 

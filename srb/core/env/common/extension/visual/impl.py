@@ -17,6 +17,7 @@ from .cfg import VisualExtCfg
 class VisualExt:
     ## Subclass requirements
     scene: InteractiveScene
+    cfg: VisualExtCfg
 
     def __init__(self, cfg: VisualExtCfg, **kwargs):
         self.__cameras = [
@@ -90,6 +91,9 @@ class VisualExt:
                         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
                     self.__camera_record_ep_frames[i][image_key].append(frame)
+
+        if self.cfg.skip_observations:
+            return {}
 
         return {
             image_key: image
